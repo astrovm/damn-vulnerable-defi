@@ -13,7 +13,13 @@ import {IERC3156FlashBorrower, IERC3156FlashLender} from "@openzeppelin/contract
  * An ERC4626-compliant tokenized vault offering flashloans for a fee.
  * An owner can pause the contract and execute arbitrary changes.
  */
-contract UnstoppableVault is IERC3156FlashLender, ReentrancyGuard, Owned, ERC4626, Pausable {
+contract UnstoppableVault is
+    IERC3156FlashLender,
+    ReentrancyGuard,
+    Owned,
+    ERC4626,
+    Pausable
+{
     using SafeTransferLib for ERC20;
     using FixedPointMathLib for uint256;
 
@@ -31,10 +37,11 @@ contract UnstoppableVault is IERC3156FlashLender, ReentrancyGuard, Owned, ERC462
 
     event FeeRecipientUpdated(address indexed newFeeRecipient);
 
-    constructor(ERC20 _token, address _owner, address _feeRecipient)
-        ERC4626(_token, "Too Damn Valuable Token", "tDVT")
-        Owned(_owner)
-    {
+    constructor(
+        ERC20 _token,
+        address _owner,
+        address _feeRecipient
+    ) ERC4626(_token, "Too Damn Valuable Token", "tDVT") Owned(_owner) {
         feeRecipient = _feeRecipient;
         emit FeeRecipientUpdated(_feeRecipient);
     }
@@ -42,7 +49,9 @@ contract UnstoppableVault is IERC3156FlashLender, ReentrancyGuard, Owned, ERC462
     /**
      * @inheritdoc IERC3156FlashLender
      */
-    function maxFlashLoan(address _token) public view nonReadReentrant returns (uint256) {
+    function maxFlashLoan(
+        address _token
+    ) public view nonReadReentrant returns (uint256) {
         if (address(asset) != _token) {
             return 0;
         }
@@ -53,7 +62,10 @@ contract UnstoppableVault is IERC3156FlashLender, ReentrancyGuard, Owned, ERC462
     /**
      * @inheritdoc IERC3156FlashLender
      */
-    function flashFee(address _token, uint256 _amount) public view returns (uint256 fee) {
+    function flashFee(
+        address _token,
+        uint256 _amount
+    ) public view returns (uint256 fee) {
         if (address(asset) != _token) {
             revert UnsupportedCurrency();
         }
@@ -68,21 +80,30 @@ contract UnstoppableVault is IERC3156FlashLender, ReentrancyGuard, Owned, ERC462
     /**
      * @inheritdoc ERC4626
      */
-    function totalAssets() public view override nonReadReentrant returns (uint256) {
+    function totalAssets()
+        public
+        view
+        override
+        nonReadReentrant
+        returns (uint256)
+    {
         return asset.balanceOf(address(this));
     }
 
     /**
      * @inheritdoc IERC3156FlashLender
      */
-    function flashLoan(IERC3156FlashBorrower receiver, address _token, uint256 amount, bytes calldata data)
-        external
-        returns (bool)
-    {
+    function flashLoan(
+        IERC3156FlashBorrower receiver,
+        address _token,
+        uint256 amount,
+        bytes calldata data
+    ) external returns (bool) {
         if (amount == 0) revert InvalidAmount(0); // fail early
         if (address(asset) != _token) revert UnsupportedCurrency(); // enforce ERC3156 requirement
         uint256 balanceBefore = totalAssets();
-        if (convertToShares(totalSupply) != balanceBefore) revert InvalidBalance(); // enforce ERC4626 requirement
+        if (convertToShares(totalSupply) != balanceBefore)
+            revert InvalidBalance(); // enforce ERC4626 requirement
 
         // transfer tokens out + execute callback on receiver
         ERC20(_token).safeTransfer(address(receiver), amount);
@@ -90,14 +111,23 @@ contract UnstoppableVault is IERC3156FlashLender, ReentrancyGuard, Owned, ERC462
         // callback must return magic value, otherwise assume it failed
         uint256 fee = flashFee(_token, amount);
         if (
-            receiver.onFlashLoan(msg.sender, address(asset), amount, fee, data)
-                != keccak256("IERC3156FlashBorrower.onFlashLoan")
+            receiver.onFlashLoan(
+                msg.sender,
+                address(asset),
+                amount,
+                fee,
+                data
+            ) != keccak256("IERC3156FlashBorrower.onFlashLoan")
         ) {
             revert CallbackFailed();
         }
 
         // pull amount + fee from receiver, then pay the fee to the recipient
-        ERC20(_token).safeTransferFrom(address(receiver), address(this), amount + fee);
+        ERC20(_token).safeTransferFrom(
+            address(receiver),
+            address(this),
+            amount + fee
+        );
         ERC20(_token).safeTransfer(feeRecipient, fee);
 
         return true;
@@ -106,12 +136,18 @@ contract UnstoppableVault is IERC3156FlashLender, ReentrancyGuard, Owned, ERC462
     /**
      * @inheritdoc ERC4626
      */
-    function beforeWithdraw(uint256 assets, uint256 shares) internal override nonReentrant {}
+    function beforeWithdraw(
+        uint256 assets,
+        uint256 shares
+    ) internal override nonReentrant {}
 
     /**
      * @inheritdoc ERC4626
      */
-    function afterDeposit(uint256 assets, uint256 shares) internal override nonReentrant whenNotPaused {}
+    function afterDeposit(
+        uint256 assets,
+        uint256 shares
+    ) internal override nonReentrant whenNotPaused {}
 
     function setFeeRecipient(address _feeRecipient) external onlyOwner {
         if (_feeRecipient != address(this)) {
@@ -121,8 +157,11 @@ contract UnstoppableVault is IERC3156FlashLender, ReentrancyGuard, Owned, ERC462
     }
 
     // Allow owner to execute arbitrary changes when paused
-    function execute(address target, bytes memory data) external onlyOwner whenPaused {
-        (bool success,) = target.delegatecall(data);
+    function execute(
+        address target,
+        bytes memory data
+    ) external onlyOwner whenPaused {
+        (bool success, ) = target.delegatecall(data);
         require(success);
     }
 
